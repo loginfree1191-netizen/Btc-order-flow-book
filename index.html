@@ -40,7 +40,6 @@
   .amt,.tot{text-align:right}
   .mid{padding:6px 10px;text-align:center;font-weight:700;font-size:13px;border-top:1px solid var(--border);border-bottom:1px solid var(--border);background:#1e2329}
 
-  /* All rows here are "whale" (≥2 BTC) so they all get the highlight */
   .row.big{
     background:rgba(240,185,11,.13);
     border-left:3px solid var(--whale);
@@ -90,10 +89,11 @@
 
 <script>
 // ===== CONFIG =====
-const MIN_BTC     = 2;    // only show levels with >= this many BTC
-const MAX_LEVELS  = 5;    // max rows per side after filtering
-const DEPTH_STREAM = 'wss://stream.binance.com:9443/ws/btcusdt@depth@100ms'; // full book
-const SNAPSHOT_URL = 'https://api.binance.com/api/v3/depth?symbol=BTCUSDT&limit=500'; // deeper snapshot
+const MIN_BTC      = 2;     // only show levels with >= this many BTC
+const MAX_LEVELS   = 5;     // max rows per side after filtering
+const WS_DEPTH     = 'wss://stream.binance.com:9443/ws/btcusdt@depth20@100ms'; // live top-20 snapshot
+const SNAPSHOT_URL = 'https://api.binance.com/api/v3/depth?symbol=BTCUSDT&limit=500'; // deeper book (whales)
+const SNAPSHOT_EVERY_MS = 5000; // refresh deep snapshot periodically
 
 // ===== DOM =====
 const asksEl=document.getElementById('asks'), bidsEl=document.getElementById('bids');
@@ -105,19 +105,46 @@ const fmt=(n,d=2)=>Number(n).toLocaleString('en-US',{minimumFractionDigits:d,max
 const short=(n)=> n>=1e6?(n/1e6).toFixed(2)+'M' : n>=1e3?(n/1e3).toFixed(1)+'K' : fmt(n,2);
 
 // ===== STATE =====
-let asksMap = new Map(); // price(string) -> {p, a}
-let bidsMap = new Map();
-let bestBid = null, bestAsk = null;
+// Live top-20 (from WS) — source of truth for best bid/ask + price
+let liveBids = [], liveAsks = [];
+// Deep book (from REST) — source of whale orders
+let deepBids = [], deepAsks = [];
 
-// ===== HELPERS =====
 function isWhale(a){ return +a >= MIN_BTC; }
 
-function filterAndSort(map, side, limit){
-  const arr = [];
-  map.forEach(({p,a}) => { if(isWhale(a)) arr.push({p:+p, a:+a, v:+p*+a}); });
-  // asks: lowest prices first (top of book); bids: highest first
+function filterWhales(levels, side, limit){
+  const arr = levels
+    .map(([p,a])=>({p:+p, a:+a, v:+p*+a}))
+    .filter(x => isWhale(x.a));
   arr.sort((x,y)=> side==='ask' ? x.p-y.p : y.p-x.p);
   return arr.slice(0, limit);
+}
+
+// Merge: prefer live levels (they're always freshest), then fill from deep book
+function combinedWhales(limit){
+  const liveAskP = new Set(liveAsks.map(([p])=>p));
+  const liveBidP = new Set(liveBids.map(([p])=>p));
+
+  const asks = filterWhales(liveAsks, 'ask', limit);
+  const bids = filterWhales(liveBids, 'bid', limit);
+
+  // If we didn't fill both sides from live top-20, backfill from deep snapshot
+  if(asks.length < limit){
+    const extra = filterWhales(deepAsks, 'ask', limit*4)
+      .filter(x => !liveAskP.has(String(x.p)))
+      .slice(0, limit - asks.length);
+    asks.push(...extra);
+  }
+  if(bids.length < limit){
+    const extra = filterWhales(deepBids, 'bid', limit*4)
+      .filter(x => !liveBidP.has(String(x.p)))
+      .slice(0, limit - bids.length);
+    bids.push(...extra);
+  }
+  // Re-sort after backfill
+  asks.sort((x,y)=>x.p-y.p);
+  bids.sort((x,y)=>y.p-x.p);
+  return {asks: asks.slice(0,limit), bids: bids.slice(0,limit)};
 }
 
 function render(el, data, side){
@@ -125,14 +152,14 @@ function render(el, data, side){
   if(!data.length){
     const e=document.createElement('div');
     e.className='empty';
-    e.textContent=`No ${side}s ≥ ${MIN_BTC} BTC in top of book`;
+    e.textContent=`No ${side}s ≥ ${MIN_BTC} BTC`;
     el.appendChild(e);
     return;
   }
   const maxV = Math.max(...data.map(x=>x.v), 1);
   data.forEach(x=>{
     const row=document.createElement('div');
-    row.className='row big '+side; // every row is a whale by definition now
+    row.className='row big '+side;
     const pct = Math.min(100, (x.v/maxV)*100);
     row.innerHTML=`<span class="bar" style="width:${pct}%"></span>
       <span class="p">${fmt(x.p)}</span>
@@ -143,41 +170,38 @@ function render(el, data, side){
 }
 
 function refreshUI(){
-  const asks = filterAndSort(asksMap, 'ask', MAX_LEVELS);
-  const bids = filterAndSort(bidsMap, 'bid', MAX_LEVELS);
-  // reverse asks so lowest ask is at the bottom (nearest the mid)
+  const {asks, bids} = combinedWhales(MAX_LEVELS);
+  // asks reversed so the closest ask is at the bottom (near mid)
   render(asksEl, asks.slice().reverse(), 'ask');
   render(bidsEl, bids, 'bid');
 
-  if(bestBid && bestAsk){
-    midEl.textContent = `Spread: ${fmt(bestAsk - bestBid)}`;
-    priceEl.textContent = '$' + fmt(bestBid);
+  // Best bid/ask ALWAYS from live top-20 for a reliable price
+  if(liveBids.length && liveAsks.length){
+    const bb = +liveBids[0][0];
+    const ba = +liveAsks[0][0];
+    midEl.textContent = `Spread: ${fmt(ba - bb)}`;
+    priceEl.textContent = '$' + fmt(bb);
   }
 }
 
-// ===== SNAPSHOT =====
-async function loadSnapshot(){
+// ===== DEEP SNAPSHOT (for whales beyond top-20) =====
+async function loadDeepSnapshot(){
   try{
-    const r = await fetch(SNAPSHOT_URL);
+    const r = await fetch(SNAPSHOT_URL, {cache:'no-store'});
     const d = await r.json();
-    asksMap.clear(); bidsMap.clear();
-    (d.asks||[]).forEach(([p,a])=>asksMap.set(p,{p,a}));
-    (d.bids||[]).forEach(([p,a])=>bidsMap.set(p,{p,a}));
-    if(d.bids?.length) bestBid = +d.bids[0][0];
-    if(d.asks?.length) bestAsk = +d.asks[0][0];
+    deepAsks = d.asks || [];
+    deepBids = d.bids || [];
     refreshUI();
-  }catch(e){ console.warn('snapshot failed', e); }
+  }catch(e){ /* silent; live stream still drives price */ }
 }
 
-// ===== WEBSOCKET (full depth diff stream) =====
+// ===== LIVE DEPTH WS (top 20, full snapshot each tick) =====
 let ws, delay = 2000;
-
 function connect(){
-  ws = new WebSocket(DEPTH_STREAM);
+  ws = new WebSocket(WS_DEPTH);
   ws.onopen = () => {
     delay = 2000;
     statusEl.textContent = `Live · orders ≥ ${MIN_BTC} BTC`;
-    loadSnapshot(); // refresh full book on (re)connect
   };
   ws.onclose = () => {
     statusEl.textContent = 'Reconnecting…';
@@ -187,22 +211,15 @@ function connect(){
   ws.onerror = () => { try{ ws.close(); }catch(_){} };
   ws.onmessage = e => {
     const d = JSON.parse(e.data);
-    // Update maps. NOTE: without proper sequence sync vs REST, this is approximate,
-    // but for a visual dashboard it's fine. We re-snapshot on every reconnect.
-    (d.bids||[]).forEach(([p,a])=>{ if(+a===0) bidsMap.delete(p); else bidsMap.set(p,{p,a}); });
-    (d.asks||[]).forEach(([p,a])=>{ if(+a===0) asksMap.delete(p); else asksMap.set(p,{p,a}); });
-
-    // Best bid/ask from the *unfiltered* maps
-    let bb=null, ba=null;
-    bidsMap.forEach(({p})=>{ if(bb===null || +p>bb) bb=+p; });
-    asksMap.forEach(({p})=>{ if(ba===null || +p<ba) ba=+p; });
-    bestBid=bb; bestAsk=ba;
-
-    refreshUI();
+    if(d.bids && d.asks){
+      liveBids = d.bids;
+      liveAsks = d.asks;
+      refreshUI();
+    }
   };
 }
 
-// ===== TICKER (24h change) =====
+// ===== 24h CHANGE TICKER =====
 let ws2, delay2 = 2000;
 function connectTicker(){
   ws2 = new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@miniTicker');
@@ -220,22 +237,22 @@ function connectTicker(){
 }
 
 // ===== BOOT =====
-(async () => {
-  await loadSnapshot();   // seed the book before WS connects
-  connect();
-  connectTicker();
-})();
+loadDeepSnapshot();
+connect();
+connectTicker();
+setInterval(loadDeepSnapshot, SNAPSHOT_EVERY_MS);
 
-// Pause streams when tab is hidden
+// Pause when tab hidden
 document.addEventListener('visibilitychange', () => {
   if(document.hidden){
     try{ ws?.close(); }catch(_){}
     try{ ws2?.close(); }catch(_){}
   } else {
+    loadDeepSnapshot();
     connect();
     connectTicker();
   }
 });
 </script>
 </body>
-</html>
+  </html>
