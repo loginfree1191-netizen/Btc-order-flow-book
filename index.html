@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>BTC Orderbook — 2BTC+ Orders</title>
+<title>BTC Orderbook — 10BTC+ Whales</title>
 <style>
   :root{
     --bg:#0b0e11; --panel:#161a1e; --border:#2b3139;
@@ -16,7 +16,7 @@
 
   .header{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px}
   .title{font-size:18px;font-weight:700}
-  .price{font-size:20px;font-weight:700;color:var(--green)}
+  .price{font-size:20px;font-weight:700;color:var(--green);font-variant-numeric:tabular-nums}
   .sub{font-size:10px;color:var(--muted)}
 
   .ctx{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px}
@@ -37,8 +37,8 @@
   .bid .bar{background:var(--green)}
   .ask .p{color:var(--red)}
   .bid .p{color:var(--green)}
-  .amt,.tot{text-align:right}
-  .mid{padding:6px 10px;text-align:center;font-weight:700;font-size:13px;border-top:1px solid var(--border);border-bottom:1px solid var(--border);background:#1e2329}
+  .amt,.tot{text-align:right;font-variant-numeric:tabular-nums}
+  .mid{padding:6px 10px;text-align:center;font-weight:700;font-size:13px;border-top:1px solid var(--border);border-bottom:1px solid var(--border);background:#1e2329;font-variant-numeric:tabular-nums}
 
   .row.big{
     background:rgba(240,185,11,.13);
@@ -60,7 +60,7 @@
   <div class="header">
     <div>
       <div class="title">BTC/USDT</div>
-      <div class="sub">Order Book · orders ≥ 2 BTC</div>
+      <div class="sub">Order Book · orders ≥ 10 BTC</div>
     </div>
     <div class="price" id="lastPrice">--</div>
   </div>
@@ -75,7 +75,7 @@
       <div class="ctx-item"><span class="k">Key Support</span><span class="v" id="sup">$55,251</span></div>
       <div class="ctx-item"><span class="k">Key Resistance</span><span class="v" id="res">$62,612</span></div>
     </div>
-    <div class="ctx-note">Showing only whale orders (≥ 2 BTC). Fewer rows = higher signal. Watch $55K–$56K support zone.</div>
+    <div class="ctx-note">Whale orders only (≥ 10 BTC). High-signal, low-noise. Watch $55K–$56K support zone.</div>
   </div>
 
   <div class="panel">
@@ -89,11 +89,12 @@
 
 <script>
 // ===== CONFIG =====
-const MIN_BTC      = 2;     // only show levels with >= this many BTC
-const MAX_LEVELS   = 5;     // max rows per side after filtering
-const WS_DEPTH     = 'wss://stream.binance.com:9443/ws/btcusdt@depth20@100ms'; // live top-20 snapshot
-const SNAPSHOT_URL = 'https://api.binance.com/api/v3/depth?symbol=BTCUSDT&limit=500'; // deeper book (whales)
-const SNAPSHOT_EVERY_MS = 5000; // refresh deep snapshot periodically
+const MIN_BTC           = 10;      // only show levels with >= this many BTC
+const MAX_LEVELS        = 5;       // rows per side after filtering
+const WS_DEPTH          = 'wss://stream.binance.com:9443/ws/btcusdt@depth20@100ms';
+const SNAPSHOT_URL      = 'https://api.binance.com/api/v3/depth?symbol=BTCUSDT&limit=1000';
+const SNAPSHOT_EVERY_MS = 3000;    // faster deep-book refresh
+const RENDER_THROTTLE   = 80;      // ms between DOM writes (WS still runs at 100ms)
 
 // ===== DOM =====
 const asksEl=document.getElementById('asks'), bidsEl=document.getElementById('bids');
@@ -105,108 +106,153 @@ const fmt=(n,d=2)=>Number(n).toLocaleString('en-US',{minimumFractionDigits:d,max
 const short=(n)=> n>=1e6?(n/1e6).toFixed(2)+'M' : n>=1e3?(n/1e3).toFixed(1)+'K' : fmt(n,2);
 
 // ===== STATE =====
-// Live top-20 (from WS) — source of truth for best bid/ask + price
 let liveBids = [], liveAsks = [];
-// Deep book (from REST) — source of whale orders
 let deepBids = [], deepAsks = [];
+let lastRender = 0;
+let renderQueued = false;
+
+// Row pool to avoid DOM create/destroy churn (fast updates)
+const ASK_POOL = [], BID_POOL = [];
+function getRow(pool, parent, i){
+  if(!pool[i]){
+    const row = document.createElement('div');
+    row.className = 'row big';
+    row.innerHTML = `<span class="bar"></span>
+      <span class="p"></span><span class="amt"></span><span class="tot"></span>`;
+    parent.appendChild(row);
+    pool[i] = {
+      el: row,
+      bar: row.children[0],
+      p:   row.children[1],
+      a:   row.children[2],
+      v:   row.children[3],
+    };
+  }
+  return pool[i];
+}
+function hideExtra(pool, count){
+  for(let i=count; i<pool.length; i++) pool[i].el.style.display='none';
+}
 
 function isWhale(a){ return +a >= MIN_BTC; }
 
-function filterWhales(levels, side, limit){
-  const arr = levels
-    .map(([p,a])=>({p:+p, a:+a, v:+p*+a}))
-    .filter(x => isWhale(x.a));
+function pickWhales(levels, side, limit){
+  const arr = [];
+  for(let i=0;i<levels.length;i++){
+    const [p,a] = levels[i];
+    if(+a >= MIN_BTC) arr.push({p:+p, a:+a, v:+p*+a});
+  }
   arr.sort((x,y)=> side==='ask' ? x.p-y.p : y.p-x.p);
   return arr.slice(0, limit);
 }
 
-// Merge: prefer live levels (they're always freshest), then fill from deep book
-function combinedWhales(limit){
-  const liveAskP = new Set(liveAsks.map(([p])=>p));
-  const liveBidP = new Set(liveBids.map(([p])=>p));
+function combined(){
+  const liveAskP = new Set(liveAsks.map(x=>x[0]));
+  const liveBidP = new Set(liveBids.map(x=>x[0]));
 
-  const asks = filterWhales(liveAsks, 'ask', limit);
-  const bids = filterWhales(liveBids, 'bid', limit);
+  let asks = pickWhales(liveAsks, 'ask', MAX_LEVELS);
+  let bids = pickWhales(liveBids, 'bid', MAX_LEVELS);
 
-  // If we didn't fill both sides from live top-20, backfill from deep snapshot
-  if(asks.length < limit){
-    const extra = filterWhales(deepAsks, 'ask', limit*4)
-      .filter(x => !liveAskP.has(String(x.p)))
-      .slice(0, limit - asks.length);
-    asks.push(...extra);
+  if(asks.length < MAX_LEVELS){
+    const extra = pickWhales(deepAsks,'ask',MAX_LEVELS*8)
+      .filter(x=>!liveAskP.has(String(x.p)))
+      .slice(0, MAX_LEVELS-asks.length);
+    asks = asks.concat(extra);
   }
-  if(bids.length < limit){
-    const extra = filterWhales(deepBids, 'bid', limit*4)
-      .filter(x => !liveBidP.has(String(x.p)))
-      .slice(0, limit - bids.length);
-    bids.push(...extra);
+  if(bids.length < MAX_LEVELS){
+    const extra = pickWhales(deepBids,'bid',MAX_LEVELS*8)
+      .filter(x=>!liveBidP.has(String(x.p)))
+      .slice(0, MAX_LEVELS-bids.length);
+    bids = bids.concat(extra);
   }
-  // Re-sort after backfill
   asks.sort((x,y)=>x.p-y.p);
   bids.sort((x,y)=>y.p-x.p);
-  return {asks: asks.slice(0,limit), bids: bids.slice(0,limit)};
+  return {asks: asks.slice(0,MAX_LEVELS), bids: bids.slice(0,MAX_LEVELS)};
 }
 
-function render(el, data, side){
-  el.innerHTML='';
+function paint(container, pool, data, side){
   if(!data.length){
-    const e=document.createElement('div');
-    e.className='empty';
-    e.textContent=`No ${side}s ≥ ${MIN_BTC} BTC`;
-    el.appendChild(e);
+    hideExtra(pool, 0);
+    // ensure empty placeholder exists
+    let ph = container.querySelector('.empty');
+    if(!ph){
+      ph = document.createElement('div');
+      ph.className='empty';
+      container.appendChild(ph);
+    }
+    ph.textContent = `No ${side}s ≥ ${MIN_BTC} BTC`;
+    ph.style.display='block';
     return;
   }
+  const ph = container.querySelector('.empty');
+  if(ph) ph.style.display='none';
+
   const maxV = Math.max(...data.map(x=>x.v), 1);
-  data.forEach(x=>{
-    const row=document.createElement('div');
-    row.className='row big '+side;
+  for(let i=0;i<data.length;i++){
+    const x = data[i];
+    const row = getRow(pool, container, i);
+    row.el.style.display='grid';
+    row.el.className = 'row big '+side;
     const pct = Math.min(100, (x.v/maxV)*100);
-    row.innerHTML=`<span class="bar" style="width:${pct}%"></span>
-      <span class="p">${fmt(x.p)}</span>
-      <span class="amt">${x.a.toFixed(3)}</span>
-      <span class="tot">${short(x.v)}</span>`;
-    el.appendChild(row);
-  });
+    row.bar.style.width = pct+'%';
+    // Only rewrite text if value changed → avoids layout thrash
+    if(row.p.textContent !== String(x.p.toFixed(2)))     row.p.textContent = fmt(x.p);
+    if(row.a.textContent !== String(x.a.toFixed(3)))     row.a.textContent = x.a.toFixed(3);
+    if(row.v.textContent !== short(x.v))                 row.v.textContent = short(x.v);
+  }
+  hideExtra(pool, data.length);
 }
 
 function refreshUI(){
-  const {asks, bids} = combinedWhales(MAX_LEVELS);
-  // asks reversed so the closest ask is at the bottom (near mid)
-  render(asksEl, asks.slice().reverse(), 'ask');
-  render(bidsEl, bids, 'bid');
+  const {asks, bids} = combined();
+  // asks reversed → lowest ask sits at the bottom (near mid)
+  paint(asksEl, ASK_POOL, asks.slice().reverse(), 'ask');
+  paint(bidsEl, BID_POOL, bids, 'bid');
 
-  // Best bid/ask ALWAYS from live top-20 for a reliable price
   if(liveBids.length && liveAsks.length){
     const bb = +liveBids[0][0];
     const ba = +liveAsks[0][0];
-    midEl.textContent = `Spread: ${fmt(ba - bb)}`;
-    priceEl.textContent = '$' + fmt(bb);
+    const spread = ba - bb;
+    const pTxt = '$'+fmt(bb);
+    const sTxt = `Spread: ${fmt(spread)}`;
+    if(priceEl.textContent !== pTxt) priceEl.textContent = pTxt;
+    if(midEl.textContent   !== sTxt) midEl.textContent   = sTxt;
   }
 }
 
-// ===== DEEP SNAPSHOT (for whales beyond top-20) =====
+// Throttle DOM writes — WS still fires at 100ms, we repaint at most every 80ms
+function scheduleRender(){
+  const now = performance.now();
+  const wait = Math.max(0, RENDER_THROTTLE - (now - lastRender));
+  if(renderQueued) return;
+  renderQueued = true;
+  setTimeout(()=>{
+    renderQueued = false;
+    lastRender = performance.now();
+    refreshUI();
+  }, wait);
+}
+
+// ===== DEEP SNAPSHOT =====
 async function loadDeepSnapshot(){
   try{
     const r = await fetch(SNAPSHOT_URL, {cache:'no-store'});
     const d = await r.json();
     deepAsks = d.asks || [];
     deepBids = d.bids || [];
-    refreshUI();
-  }catch(e){ /* silent; live stream still drives price */ }
+    scheduleRender();
+  }catch(_){}
 }
 
-// ===== LIVE DEPTH WS (top 20, full snapshot each tick) =====
-let ws, delay = 2000;
+// ===== LIVE DEPTH WS =====
+let ws, delay = 1000;
 function connect(){
   ws = new WebSocket(WS_DEPTH);
-  ws.onopen = () => {
-    delay = 2000;
-    statusEl.textContent = `Live · orders ≥ ${MIN_BTC} BTC`;
-  };
+  ws.onopen = () => { delay = 1000; statusEl.textContent = `Live · whales ≥ ${MIN_BTC} BTC`; };
   ws.onclose = () => {
     statusEl.textContent = 'Reconnecting…';
     setTimeout(connect, delay);
-    delay = Math.min(delay*1.5, 15000);
+    delay = Math.min(delay*1.5, 10000);
   };
   ws.onerror = () => { try{ ws.close(); }catch(_){} };
   ws.onmessage = e => {
@@ -214,17 +260,17 @@ function connect(){
     if(d.bids && d.asks){
       liveBids = d.bids;
       liveAsks = d.asks;
-      refreshUI();
+      scheduleRender();
     }
   };
 }
 
-// ===== 24h CHANGE TICKER =====
-let ws2, delay2 = 2000;
+// ===== TICKER =====
+let ws2, delay2 = 1000;
 function connectTicker(){
   ws2 = new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@miniTicker');
-  ws2.onopen = () => { delay2 = 2000; };
-  ws2.onclose = () => { setTimeout(connectTicker, delay2); delay2 = Math.min(delay2*1.5, 15000); };
+  ws2.onopen = () => { delay2 = 1000; };
+  ws2.onclose = () => { setTimeout(connectTicker, delay2); delay2 = Math.min(delay2*1.5, 10000); };
   ws2.onerror = () => { try{ ws2.close(); }catch(_){} };
   ws2.onmessage = e => {
     const d = JSON.parse(e.data);
@@ -242,7 +288,7 @@ connect();
 connectTicker();
 setInterval(loadDeepSnapshot, SNAPSHOT_EVERY_MS);
 
-// Pause when tab hidden
+// Pause when hidden
 document.addEventListener('visibilitychange', () => {
   if(document.hidden){
     try{ ws?.close(); }catch(_){}
@@ -255,4 +301,4 @@ document.addEventListener('visibilitychange', () => {
 });
 </script>
 </body>
-  </html>
+</html>
