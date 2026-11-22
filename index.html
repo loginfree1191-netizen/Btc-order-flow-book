@@ -36,39 +36,6 @@
   }
   .tv-wrap .tradingview-widget-copyright a{ color:var(--muted) !important; text-decoration:none; }
 
-  /* ===== TOAST — FROM BELOW ===== */
-  .toast-wrap{
-    position:fixed; bottom:10px; left:50%; transform:translateX(-50%);
-    width:calc(100% - 20px); max-width:460px;
-    z-index:100; display:flex; flex-direction:column-reverse; gap:6px;
-    pointer-events:none;
-  }
-  .toast{
-    background:rgba(30,35,41,.97);
-    border:1px solid var(--whale);
-    border-left:4px solid var(--whale);
-    border-radius:8px;
-    padding:8px 12px;
-    font-size:11.5px;
-    color:var(--text);
-    display:flex; align-items:center; gap:8px;
-    box-shadow:0 6px 24px rgba(0,0,0,.5);
-    animation: toast-in .35s cubic-bezier(.2,.9,.3,1.4), toast-out .4s ease-in 2.6s forwards;
-    pointer-events:auto;
-  }
-  .toast.ask  { border-color:var(--red);   border-left-color:var(--red);   background:rgba(50,20,25,.97); }
-  .toast.bid  { border-color:var(--green); border-left-color:var(--green); background:rgba(15,45,32,.97); }
-  .toast .icon{ font-size:14px; }
-  .toast .body{ flex:1; line-height:1.35; }
-  .toast .p{ font-weight:700; font-variant-numeric:tabular-nums; }
-  .toast.ask  .p{ color:var(--red); }
-  .toast.bid  .p{ color:var(--green); }
-  .toast .s{ color:var(--muted); font-size:10px; }
-  .toast .qty{ font-weight:700; color:var(--whale); font-variant-numeric:tabular-nums; }
-
-  @keyframes toast-in  { from{opacity:0;transform:translateY(20px)} to{opacity:1;transform:translateY(0)} }
-  @keyframes toast-out { from{opacity:1;transform:translateY(0)}     to{opacity:0;transform:translateY(10px)} }
-
   .panel{background:var(--panel);border:1px solid var(--border);border-radius:8px;overflow:hidden}
   .row{display:grid;grid-template-columns:1.15fr 1fr .85fr;padding:5px 10px;font-size:11.5px;position:relative;align-items:center;will-change:contents}
   .row.head{color:var(--muted);border-bottom:1px solid var(--border);font-size:9.5px;text-transform:uppercase}
@@ -117,12 +84,75 @@
   .status{font-size:10px;color:var(--muted);text-align:center;margin-top:6px}
   .dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--green);margin-right:4px}
   .dot.off{background:var(--red)}
+
+  /* ===== WHALE ALERT BOX (below orderbook) ===== */
+  .alerts{
+    margin-top:8px;
+    background:var(--panel);
+    border:1px solid var(--border);
+    border-radius:8px;
+    overflow:hidden;
+  }
+  .alerts-head{
+    display:flex; justify-content:space-between; align-items:center;
+    padding:7px 12px;
+    font-size:9.5px; text-transform:uppercase; letter-spacing:.8px;
+    color:var(--muted);
+    border-bottom:1px solid var(--border);
+    background:#1a1f24;
+  }
+  .alerts-head .count{
+    color:var(--whale); font-weight:700; font-size:9px;
+  }
+  .alerts-list{
+    max-height:150px;
+    overflow-y:auto;
+    scrollbar-width:thin;
+    scrollbar-color:var(--border) transparent;
+  }
+  .alerts-list::-webkit-scrollbar{ width:6px; }
+  .alerts-list::-webkit-scrollbar-thumb{ background:var(--border); border-radius:3px; }
+
+  .alert-row{
+    display:grid;
+    grid-template-columns:14px 1fr auto auto;
+    gap:8px;
+    align-items:center;
+    padding:6px 12px;
+    font-size:11px;
+    border-bottom:1px solid rgba(255,255,255,.03);
+    animation: alert-in .3s ease-out;
+    font-variant-numeric:tabular-nums;
+  }
+  .alert-row:last-child{ border-bottom:none; }
+  .alert-row.ask{ border-left:3px solid var(--red); padding-left:9px; }
+  .alert-row.bid{ border-left:3px solid var(--green); padding-left:9px; }
+
+  .alert-row .icon{ font-size:12px; }
+  .alert-row .desc{ color:var(--text); }
+  .alert-row .desc .verb{ font-weight:600; }
+  .alert-row .desc .side{ font-size:9.5px; color:var(--muted); margin-left:4px; }
+  .alert-row .desc .time{ font-size:9px; color:var(--muted); margin-left:6px; }
+  .alert-row .p{ font-weight:700; }
+  .alert-row.ask .p{ color:var(--red); }
+  .alert-row.bid .p{ color:var(--green); }
+  .alert-row .qty{ font-weight:700; color:var(--whale); }
+
+  @keyframes alert-in {
+    from{ opacity:0; transform:translateY(-6px); background:rgba(240,185,11,.15); }
+    to{ opacity:1; transform:translateY(0);   background:transparent; }
+  }
+
+  .alerts-empty{
+    padding:12px;
+    text-align:center;
+    font-size:10px;
+    color:var(--muted);
+    font-style:italic;
+  }
 </style>
 </head>
 <body>
-
-<div class="toast-wrap" id="toastWrap"></div>
-
 <div class="wrap">
   <div class="header">
     <div>
@@ -161,36 +191,51 @@
     </div>
   </div>
 
+  <!-- Order book -->
   <div class="panel">
     <div class="row head"><span>Price</span><span class="amt">BTC</span><span class="tot">USDT</span></div>
     <div id="asks"></div>
     <div class="mid" id="mid">Spread: --</div>
     <div id="bids"></div>
   </div>
+
+  <!-- Status -->
   <div class="status"><span class="dot off" id="dot"></span><span id="status">Connecting…</span></div>
+
+  <!-- ===== WHALE ALERTS BOX ===== -->
+  <div class="alerts">
+    <div class="alerts-head">
+      <span>🐋 Whale Alerts</span>
+      <span class="count" id="alertCount">0</span>
+    </div>
+    <div class="alerts-list" id="alertsList">
+      <div class="alerts-empty" id="alertsEmpty">Waiting for whale orders…</div>
+    </div>
+  </div>
 </div>
 
 <script>
 // ===== CONFIG =====
 const MIN_BTC           = 3;
-const MAX_LEVELS        = 10;     // ← MORE price rows per side (was 5)
+const MAX_LEVELS        = 10;
 const WS_DEPTH          = 'wss://stream.binance.com:9443/ws/btcusdt@depth20@100ms';
 const SNAPSHOT_URL      = 'https://api.binance.com/api/v3/depth?symbol=BTCUSDT&limit=1000';
 const SNAPSHOT_EVERY_MS = 2000;
 const RENDER_THROTTLE   = 60;
-const TOAST_LIFE_MS     = 3000;
-const TOAST_MAX         = 3;
-const TOAST_MIN_SIZE_BTC= 5;
-const TOAST_COOLDOWN_MS = 4000;
+const ALERT_MAX         = 8;       // max rows in the alerts box
+const ALERT_MIN_SIZE_BTC= 5;
+const ALERT_COOLDOWN_MS = 4000;
 
 // ===== DOM =====
 const asksEl=document.getElementById('asks'), bidsEl=document.getElementById('bids');
 const midEl=document.getElementById('mid'), priceEl=document.getElementById('lastPrice');
 const statusEl=document.getElementById('status'), dotEl=document.getElementById('dot');
-const toastWrap=document.getElementById('toastWrap');
+const alertsList=document.getElementById('alertsList'), alertsEmpty=document.getElementById('alertsEmpty');
+const alertCount=document.getElementById('alertCount');
 
 const fmt=(n,d=2)=>Number(n).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d});
 const short=(n)=> n>=1e6?(n/1e6).toFixed(2)+'M' : n>=1e3?(n/1e3).toFixed(1)+'K' : fmt(n,2);
+const timeNow=()=>{ const d=new Date(); return d.toTimeString().slice(0,8); };
 
 // ===== STATE =====
 let liveBids = [], liveAsks = [];
@@ -198,39 +243,49 @@ let deepBids = [], deepAsks = [];
 let needsPaint = false;
 let lastPaint = 0;
 let lastPrice = 0;
+let alertTotal = 0;
 
 const lastSize = new Map();
 const lastToastAt = new Map();
 
-// ===== TOAST =====
-function toast(side, price, qty, kind){
+// ===== ALERTS BOX (static, below orderbook) =====
+function addAlert(side, price, qty, kind){
   const key = side+'|'+price;
   const now = Date.now();
   const last = lastToastAt.get(key) || 0;
-  if(now - last < TOAST_COOLDOWN_MS) return;
+  if(now - last < ALERT_COOLDOWN_MS) return;
   lastToastAt.set(key, now);
 
-  const el = document.createElement('div');
-  el.className = 'toast '+side;
+  // hide placeholder
+  if(alertsEmpty) alertsEmpty.style.display='none';
+
   const isNew = kind === 'new';
   const icon = isNew ? '🐋' : '📈';
   const verb = isNew ? 'New wall' : 'Wall grew';
   const sideLabel = side === 'ask' ? 'ASK' : 'BID';
+
+  const el = document.createElement('div');
+  el.className = 'alert-row '+side;
   el.innerHTML = `
     <span class="icon">${icon}</span>
-    <span class="body">
-      <div>${verb} · ${sideLabel}</div>
-      <div><span class="p">$${fmt(price)}</span> · <span class="qty">${qty.toFixed(2)} BTC</span> <span class="s">(${short(price*qty)})</span></div>
-    </span>`;
-  toastWrap.appendChild(el);
+    <span class="desc">
+      <span class="verb">${verb}</span>
+      <span class="side">${sideLabel}</span>
+      <span class="time">${timeNow()}</span>
+    </span>
+    <span class="p">$${fmt(price)}</span>
+    <span class="qty">${qty.toFixed(2)} BTC</span>`;
 
-  while(toastWrap.children.length > TOAST_MAX){
-    toastWrap.removeChild(toastWrap.firstChild);
+  // prepend newest on top
+  alertsList.insertBefore(el, alertsList.firstChild);
+
+  // trim
+  while(alertsList.children.length > ALERT_MAX + (alertsEmpty?1:0)){
+    alertsList.removeChild(alertsList.lastChild);
   }
 
-  setTimeout(()=>{
-    if(el.parentNode) el.parentNode.removeChild(el);
-  }, TOAST_LIFE_MS);
+  alertTotal++;
+  alertCount.textContent = alertTotal;
 }
 
 // ===== ROW POOL =====
@@ -298,13 +353,13 @@ function paint(container, pool, data, side){
     const prev = lastSize.get(key);
     if(prev === undefined){
       flashRow(r, 'flash-new');
-      if(x.a >= TOAST_MIN_SIZE_BTC) toast(side, x.p, x.a, 'new');
+      if(x.a >= ALERT_MIN_SIZE_BTC) addAlert(side, x.p, x.a, 'new');
     } else if(prev > 0){
       const delta = x.a - prev;
       if(delta > MIN_BTC * 0.1){
         flashRow(r, 'flash-grow');
-        if(x.a >= TOAST_MIN_SIZE_BTC && delta >= TOAST_MIN_SIZE_BTC * 0.5){
-          toast(side, x.p, x.a, 'grow');
+        if(x.a >= ALERT_MIN_SIZE_BTC && delta >= ALERT_MIN_SIZE_BTC * 0.5){
+          addAlert(side, x.p, x.a, 'grow');
         }
       } else if(delta < -MIN_BTC * 0.1){
         flashRow(r, 'flash-shrink');
@@ -426,4 +481,4 @@ document.addEventListener('visibilitychange', () => {
 });
 </script>
 </body>
-</html>
+        </html>
