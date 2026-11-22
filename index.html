@@ -19,21 +19,28 @@
   .price{font-size:20px;font-weight:700;color:var(--green);font-variant-numeric:tabular-nums;transition:color .15s}
   .sub{font-size:10px;color:var(--muted)}
 
-  .ctx{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px}
-  .ctx-title{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.8px;margin-bottom:8px}
-  .ctx-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;font-size:11px}
-  .ctx-item{display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.04)}
-  .ctx-item .k{color:var(--muted)}
-  .ctx-item .v{font-weight:600}
-  .v.fear{color:var(--red)}
-  .v.warn{color:var(--whale)}
-  .ctx-note{font-size:9px;color:var(--muted);margin-top:8px;line-height:1.3;font-style:italic}
+  /* ===== TRADINGVIEW CHART ===== */
+  .tv-wrap{
+    background:var(--panel);
+    border:1px solid var(--border);
+    border-radius:8px;
+    padding:0;
+    margin-bottom:8px;
+    overflow:hidden;
+    height:220px;
+  }
+  .tv-wrap .tradingview-widget-container{ height:100%; }
+  .tv-wrap .tradingview-widget-container__widget{ height:calc(100% - 22px); }
+  .tv-wrap .tradingview-widget-copyright{
+    font-size:9px !important; line-height:22px; text-align:center; color:var(--muted) !important;
+  }
+  .tv-wrap .tradingview-widget-copyright a{ color:var(--muted) !important; text-decoration:none; }
 
-  /* ===== TOAST BANNER ===== */
+  /* ===== TOAST — FROM BELOW ===== */
   .toast-wrap{
-    position:fixed; top:10px; left:50%; transform:translateX(-50%);
+    position:fixed; bottom:10px; left:50%; transform:translateX(-50%);
     width:calc(100% - 20px); max-width:460px;
-    z-index:100; display:flex; flex-direction:column; gap:6px;
+    z-index:100; display:flex; flex-direction:column-reverse; gap:6px;
     pointer-events:none;
   }
   .toast{
@@ -59,8 +66,8 @@
   .toast .s{ color:var(--muted); font-size:10px; }
   .toast .qty{ font-weight:700; color:var(--whale); font-variant-numeric:tabular-nums; }
 
-  @keyframes toast-in  { from{opacity:0;transform:translateY(-12px)} to{opacity:1;transform:translateY(0)} }
-  @keyframes toast-out { from{opacity:1;transform:translateY(0)}     to{opacity:0;transform:translateY(-8px)} }
+  @keyframes toast-in  { from{opacity:0;transform:translateY(20px)} to{opacity:1;transform:translateY(0)} }
+  @keyframes toast-out { from{opacity:1;transform:translateY(0)}     to{opacity:0;transform:translateY(10px)} }
 
   .panel{background:var(--panel);border:1px solid var(--border);border-radius:8px;overflow:hidden}
   .row{display:grid;grid-template-columns:1.15fr 1fr .85fr;padding:5px 10px;font-size:11.5px;position:relative;align-items:center;will-change:contents}
@@ -114,7 +121,6 @@
 </head>
 <body>
 
-<!-- Whale toast stack -->
 <div class="toast-wrap" id="toastWrap"></div>
 
 <div class="wrap">
@@ -126,17 +132,33 @@
     <div class="price" id="lastPrice">--</div>
   </div>
 
-  <div class="ctx">
-    <div class="ctx-title">📊 Market Context</div>
-    <div class="ctx-grid">
-      <div class="ctx-item"><span class="k">Fear &amp; Greed</span><span class="v fear" id="fng">6 · Extreme Fear</span></div>
-      <div class="ctx-item"><span class="k">24h Change</span><span class="v" id="chg">--</span></div>
-      <div class="ctx-item"><span class="k">200-day MA</span><span class="v warn" id="ma200">~$75,627</span></div>
-      <div class="ctx-item"><span class="k">50-day MA</span><span class="v warn" id="ma50">~$76,612</span></div>
-      <div class="ctx-item"><span class="k">Key Support</span><span class="v" id="sup">$55,251</span></div>
-      <div class="ctx-item"><span class="k">Key Resistance</span><span class="v" id="res">$62,612</span></div>
+  <!-- TradingView 1D Chart -->
+  <div class="tv-wrap">
+    <div class="tradingview-widget-container">
+      <div class="tradingview-widget-container__widget"></div>
+      <div class="tradingview-widget-copyright">
+        <a href="https://www.tradingview.com/symbols/BTCUSDT/?exchange=BINANCE" rel="noopener" target="_blank">BTCUSDT Chart</a> by TradingView
+      </div>
+      <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js" async>
+      {
+        "autosize": true,
+        "symbol": "BINANCE:BTCUSDT",
+        "interval": "D",
+        "timezone": "Etc/UTC",
+        "theme": "dark",
+        "style": "1",
+        "locale": "en",
+        "backgroundColor": "rgba(22, 26, 30, 1)",
+        "gridColor": "rgba(43, 49, 57, 0.5)",
+        "hide_side_toolbar": true,
+        "allow_symbol_change": false,
+        "save_image": false,
+        "calendar": false,
+        "hide_volume": false,
+        "support_host": "https://www.tradingview.com"
+      }
+      </script>
     </div>
-    <div class="ctx-note">Whale orders only (&gt; 3 BTC). Green flash = new wall · Gold flash = size grew · Red flash = size shrank.</div>
   </div>
 
   <div class="panel">
@@ -151,21 +173,20 @@
 <script>
 // ===== CONFIG =====
 const MIN_BTC           = 3;
-const MAX_LEVELS        = 5;
+const MAX_LEVELS        = 10;     // ← MORE price rows per side (was 5)
 const WS_DEPTH          = 'wss://stream.binance.com:9443/ws/btcusdt@depth20@100ms';
 const SNAPSHOT_URL      = 'https://api.binance.com/api/v3/depth?symbol=BTCUSDT&limit=1000';
 const SNAPSHOT_EVERY_MS = 2000;
 const RENDER_THROTTLE   = 60;
 const TOAST_LIFE_MS     = 3000;
 const TOAST_MAX         = 3;
-const TOAST_MIN_SIZE_BTC= 5;    // only toast for walls >= 5 BTC (bigger than flash threshold)
-const TOAST_COOLDOWN_MS = 4000; // don't re-toast same price within 4s
+const TOAST_MIN_SIZE_BTC= 5;
+const TOAST_COOLDOWN_MS = 4000;
 
 // ===== DOM =====
 const asksEl=document.getElementById('asks'), bidsEl=document.getElementById('bids');
 const midEl=document.getElementById('mid'), priceEl=document.getElementById('lastPrice');
 const statusEl=document.getElementById('status'), dotEl=document.getElementById('dot');
-const chgEl=document.getElementById('chg');
 const toastWrap=document.getElementById('toastWrap');
 
 const fmt=(n,d=2)=>Number(n).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d});
@@ -178,8 +199,8 @@ let needsPaint = false;
 let lastPaint = 0;
 let lastPrice = 0;
 
-const lastSize = new Map();       // key = side|price -> qty
-const lastToastAt = new Map();    // key = side|price -> timestamp
+const lastSize = new Map();
+const lastToastAt = new Map();
 
 // ===== TOAST =====
 function toast(side, price, qty, kind){
@@ -203,7 +224,6 @@ function toast(side, price, qty, kind){
     </span>`;
   toastWrap.appendChild(el);
 
-  // Trim to max
   while(toastWrap.children.length > TOAST_MAX){
     toastWrap.removeChild(toastWrap.firstChild);
   }
@@ -390,41 +410,20 @@ function connect(){
   };
 }
 
-let ws2, delay2 = 500;
-function connectTicker(){
-  ws2 = new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@miniTicker');
-  ws2.onopen = () => { delay2 = 500; };
-  ws2.onclose = () => { setTimeout(connectTicker, delay2); delay2 = Math.min(delay2*1.5, 5000); };
-  ws2.onerror = () => { try{ ws2.close(); }catch(_){} };
-  ws2.onmessage = e => {
-    const d = JSON.parse(e.data);
-    if(d.c && d.o){
-      const chg = ((d.c - d.o) / d.o * 100);
-      const txt = (chg>=0?'+':'') + chg.toFixed(2) + '%';
-      const col = chg>=0 ? 'var(--green)' : 'var(--red)';
-      if(chgEl.textContent!==txt) chgEl.textContent=txt;
-      if(chgEl.style.color!==col) chgEl.style.color=col;
-    }
-  };
-}
-
 loadDeepSnapshot();
 connect();
-connectTicker();
 setInterval(loadDeepSnapshot, SNAPSHOT_EVERY_MS);
 
 document.addEventListener('visibilitychange', () => {
   if(document.hidden){
     try{ ws?.close(); }catch(_){}
-    try{ ws2?.close(); }catch(_){}
   } else {
     lastSize.clear();
     lastToastAt.clear();
     loadDeepSnapshot();
     connect();
-    connectTicker();
   }
 });
 </script>
 </body>
-    </html>
+</html>
